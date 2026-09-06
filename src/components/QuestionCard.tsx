@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import type { Question } from "@/types";
 import { cn, DIFFICULTY_COLOR, DIFFICULTY_LABEL, OPTION_LABELS, toFa } from "@/lib/utils";
+import { relatedLessons } from "@/lib/lessons";
 import { useApp } from "@/store/AppContext";
 import { Badge, Button, Card } from "./ui";
 import { RichText } from "./RichText";
@@ -56,12 +57,13 @@ export function QuestionCard({ question, index, mode = "browse", selectedIndex, 
   const [picked, setPicked] = useState<number | null>(mode === "review" ? (selectedIndex ?? null) : null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const bookmarked = isBookmarked(question.id);
-  const lessons = question.topicIds.flatMap((t) => catalog.lessonsByTopic.get(t) ?? []);
+  const lessons = relatedLessons(question, catalog.lessons, user?.role === "admin");
+  const [showLessons, setShowLessons] = useState(false);
 
   const reveal = mode === "review" || showAnswer;
 
   return (
-    <Card className={cn("overflow-hidden transition", selected && "ring-2 ring-brand-500", !owned && "bg-slate-50/60")}>
+    <Card data-question-id={question.id} className={cn("overflow-hidden transition", selected && "ring-2 ring-brand-500", !owned && "bg-slate-50/60")}>
       <div className="flex items-start gap-3 p-4 sm:p-5">
         {selectable && (
           <button
@@ -118,7 +120,7 @@ export function QuestionCard({ question, index, mode = "browse", selectedIndex, 
                     >
                       {reveal && isCorrect ? <Check className="h-3.5 w-3.5" /> : reveal && isPicked ? <X className="h-3.5 w-3.5" /> : OPTION_LABELS[i]}
                     </span>
-                    <RichText text={opt} inline className="leading-7" />
+                    <RichText text={opt} images={question.images} inline className="leading-7" />
                   </button>
                 );
               })}
@@ -141,14 +143,24 @@ export function QuestionCard({ question, index, mode = "browse", selectedIndex, 
                 </>
               )}
               {lessons.length > 0 && (
-                <Link to={`/app/lessons/${lessons[0].id}`} className="inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-medium text-brand-700 hover:bg-brand-50">
-                  <BookOpen className="h-3.5 w-3.5" /> درسنامه‌ی مرتبط
-                </Link>
+                <Button variant="ghost" size="sm" aria-expanded={showLessons} onClick={() => setShowLessons((shown) => !shown)} icon={<BookOpen className="h-3.5 w-3.5" />}>
+                  درسنامه‌های مرتبط ({toFa(lessons.length)})
+                </Button>
               )}
               <span className="mr-auto inline-flex items-center gap-1 text-[11px] text-slate-400">
                 <Clock className="h-3 w-3" /> {toFa(Math.round(question.estimatedSeconds / 60 * 10) / 10)} دقیقه
               </span>
               {extraActions}
+            </div>
+          )}
+
+          {owned && !compact && showLessons && lessons.length > 0 && (
+            <div className="mt-3 space-y-2 rounded-xl border border-brand-100 bg-brand-50/40 p-3" aria-label="درسنامه‌های مرتبط با سوال">
+              {lessons.map((lesson) => <Link key={lesson.id} to={`/app/lessons/${lesson.id}`} className="flex flex-wrap items-center gap-2 rounded-lg bg-white px-3 py-2 text-xs leading-6 text-brand-700 hover:bg-brand-50">
+                <BookOpen className="h-3.5 w-3.5 shrink-0" /><span className="min-w-0 flex-1">{lesson.title}</span>
+                <Badge tone={question.lessonIds?.includes(lesson.id) ? "brand" : "slate"}>{question.lessonIds?.includes(lesson.id) ? "متصل به این سوال" : "پیشنهاد مبحث"}</Badge>
+                {lesson.status === "draft" && <Badge tone="amber">پیش‌نویس</Badge>}
+              </Link>)}
             </div>
           )}
 

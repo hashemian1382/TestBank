@@ -7,6 +7,7 @@ import { QuestionFilters } from "@/components/QuestionFilters";
 import { Badge, Button, Card, ConfirmDialog, PageHeader } from "@/components/ui";
 import { emptyFilter } from "@/lib/questionFilter";
 import { applyQuestionFilter } from "@/lib/questionFilter";
+import { downloadJson } from "@/lib/download";
 import { plainText, toFa } from "@/lib/utils";
 import { api } from "@/services";
 import { useApp } from "@/store/AppContext";
@@ -19,11 +20,14 @@ export default function AdminQuestions() {
   const [del, setDel] = useState<Question | null>(null);
   const [limit, setLimit] = useState(25);
 
-  const list = useMemo(() => applyQuestionFilter(catalog.questions, filter, { subjects: catalog.subjects }), [catalog.questions, catalog.subjects, filter]);
+  const list = useMemo(() => applyQuestionFilter(catalog.questions, filter, { subjects: catalog.subjects, includeInactive: true }), [catalog.questions, catalog.subjects, filter]);
 
+  const completeSubjectIds = (q: Question) => [...new Set([...q.subjectIds, ...q.topicIds.flatMap((id) => {
+    const topic = catalog.topicById.get(id); return topic ? [topic.subjectId] : [];
+  })])];
   const exportJson = () => {
     const rows = list.map((q) => ({
-      subjects: q.subjectIds,
+      subjects: completeSubjectIds(q),
       topics: q.topicIds,
       stem: q.stem,
       options: q.options,
@@ -34,12 +38,11 @@ export default function AdminQuestions() {
       tags: q.tags,
       images: q.images,
       estimatedSeconds: q.estimatedSeconds,
+      lessonIds: q.lessonIds ?? [],
+      isActive: q.isActive,
     }));
-    const blob = new Blob([JSON.stringify(rows, null, 2)], { type: "application/json" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `questions-${Date.now()}.json`;
-    a.click();
+    downloadJson(rows, `questions-${Date.now()}.json`);
+    if (list.some((q) => completeSubjectIds(q).length !== q.subjectIds.length)) toast("در خروجی، درسِ مباحث میان‌درسی قدیمی هم افزوده شد تا ورود مجدد معتبر باشد؛ اصل سوال‌ها تغییر نکرد", "info");
   };
 
   const duplicate = async (q: Question) => {
@@ -47,9 +50,11 @@ export default function AdminQuestions() {
     void _id;
     void _c;
     void _u;
-    await api.admin.createQuestion({ ...rest, stem: `${rest.stem}\n(کپی)` });
-    await refreshCatalog();
-    toast("کپی سوال ساخته شد", "success");
+    try {
+      await api.admin.createQuestion({ ...rest, subjectIds: completeSubjectIds(q), stem: `${rest.stem}\n(کپی)` });
+      await refreshCatalog();
+      toast("کپی سوال ساخته شد", "success");
+    } catch (error) { toast(error instanceof Error ? error.message : "کپی انجام نشد", "error"); }
   };
 
   return (

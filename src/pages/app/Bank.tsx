@@ -16,7 +16,7 @@ const PAGE = 10;
 export default function Bank({ bookmarks = false }: { bookmarks?: boolean }) {
   const [params] = useSearchParams();
   const navigate = useNavigate();
-  const { user } = useApp();
+  const { user, catalog } = useApp();
   const [filter, setFilter] = useState<QuestionFilter>(() => ({
     ...emptyFilter(),
     ownedOnly: !bookmarks,
@@ -33,6 +33,13 @@ export default function Bank({ bookmarks = false }: { bookmarks?: boolean }) {
   useEffect(() => {
     setFilter((f) => ({ ...f, ownedOnly: !showAll && !bookmarks }));
   }, [showAll, bookmarks]);
+
+  useEffect(() => {
+    setFilter((previous) => {
+      const topicIds = previous.topicIds?.map((id) => catalog.topicById.get(id)?.id ?? id);
+      return topicIds?.some((id, index) => id !== previous.topicIds?.[index]) ? { ...previous, topicIds: [...new Set(topicIds)] } : previous;
+    });
+  }, [catalog.topicById]);
 
   useEffect(() => setLimit(PAGE), [filter]);
 

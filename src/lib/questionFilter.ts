@@ -22,6 +22,7 @@ export const buildAnswerStateMap = (attempts: ExamAttempt[], questionById: (id: 
 
 export interface FilterContext {
   subjects: Subject[];
+  includeInactive?: boolean;
   purchasedSubjectIds?: ID[];
   bookmarkedQuestionIds?: ID[];
   answerStates?: Map<ID, AnswerState>;
@@ -29,7 +30,7 @@ export interface FilterContext {
 
 /** اعمال فیلتر روی لیست سوالات — منطق یکسان در کلاینت و سرور mock */
 export const applyQuestionFilter = (questions: Question[], filter: QuestionFilter, ctx: FilterContext): Question[] => {
-  let list = questions.filter((q) => q.isActive);
+  let list = questions.filter((q) => q.isActive || ctx.includeInactive);
 
   if (filter.ownedOnly && ctx.purchasedSubjectIds) list = list.filter((q) => q.subjectIds.some((s) => ctx.purchasedSubjectIds!.includes(s)));
   if (filter.bookmarkedOnly && ctx.bookmarkedQuestionIds) list = list.filter((q) => ctx.bookmarkedQuestionIds!.includes(q.id));

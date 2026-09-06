@@ -9,6 +9,10 @@ import type {
   ExamTemplate,
   ID,
   Lesson,
+  LessonInput,
+  QuestionSaveInput,
+  QuestionPatch,
+  TopicMergeInput,
   Question,
   QuestionFilter,
   Referral,
@@ -18,6 +22,10 @@ import type {
   Transaction,
   User,
 } from "@/types";
+import { unique, catalogNameKey } from "@/lib/catalog";
+import { insertLesson, validateLesson, validateQuestion, validateTopicTitle } from "./contentValidation";
+import { importQuestionRows } from "./bulkImport";
+import { applyTopicMerge, planTopicMerge } from "./topicOperations";
 import { DEFAULT_SETTINGS, DOMAINS, LESSONS, QUESTIONS, SEED_USERS, SOURCES, SUBJECTS, TOPICS } from "@/data";
 import { computeResult, generateReferralCode, nowIso, sample, sleep, uid } from "@/lib/utils";
 import { applyQuestionFilter, buildAnswerStateMap } from "@/lib/questionFilter";
@@ -47,13 +55,13 @@ interface DB {
 }
 
 const seedDb = (): DB => ({
-  version: 2,
-  users: SEED_USERS.map((u) => ({ ...u })),
+  version: 3,
+  users: structuredClone(SEED_USERS),
   subjects: structuredClone(SUBJECTS),
   topics: structuredClone(TOPICS),
   sources: structuredClone(SOURCES),
-  questions: structuredClone(QUESTIONS),
-  lessons: structuredClone(LESSONS),
+  questions: structuredClone(QUESTIONS).map((q) => ({ ...q, lessonIds: q.lessonIds ?? [] })),
+  lessons: structuredClone(LESSONS).map((l) => ({ ...l, status: l.status ?? "published", summary: l.summary ?? "", tags: l.tags ?? [], order: l.order ?? 0 })),
   collections: [
     {
       id: "col-demo-1",
@@ -83,43 +91,71 @@ const seedDb = (): DB => ({
   sessions: {},
 });
 
+/** The storage key stays v2 deliberately: upgrading never resets an existing database. */
 class LocalStore {
-  private db: DB;
-  constructor() {
-    this.db = this.load();
+  private db?: DB;
+  private lastSerialized?: string | null;
+  private readStorage(): string | null {
+    let raw: string | null;
+    try { raw = localStorage.getItem(STORAGE_KEY); }
+    catch { throw new ApiError("دسترسی به حافظه‌ی مرورگر ممکن نیست؛ ذخیره‌سازی را در تنظیمات مرورگر فعال کنید", 500); }
+    return raw;
   }
-  private load(): DB {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as DB;
-        if (parsed.version === 2) return parsed;
+  private load(raw: string | null): DB {
+    if (raw) {
+      let parsed: DB;
+      try { parsed = JSON.parse(raw) as DB; }
+      catch { throw new ApiError("داده‌ی محلی خوانده نشد. داده‌ها پاک نشده‌اند؛ پیش از بازیابی از آن‌ها نسخه‌ی پشتیبان بگیرید", 500); }
+      if (![2, 3].includes(parsed.version) || ![parsed.questions, parsed.lessons, parsed.topics, parsed.subjects,
+        parsed.sources, parsed.users, parsed.attempts, parsed.examTemplates, parsed.collections].every(Array.isArray)) {
+        throw new ApiError("نسخه یا ساختار داده‌ی محلی پشتیبانی نمی‌شود. داده‌های موجود بدون تغییر باقی مانده‌اند", 500);
       }
-    } catch {
-      /* ignore */
+      parsed.questions.forEach((q) => { q.lessonIds = unique(q.lessonIds ?? []); });
+      parsed.lessons.forEach((l) => {
+        l.status ??= "published"; l.summary ??= ""; l.tags ??= []; l.order ??= 0;
+      });
+      parsed.attempts.forEach((a) => {
+        if (a.result && !a.resultQuestions) {
+          a.resultQuestions = parsed.questions.filter((q) => a.questionIds.includes(q.id))
+            .map(({ id, subjectIds, topicIds, correctIndex }) => ({ id, subjectIds: [...subjectIds], topicIds: [...topicIds], correctIndex }));
+        }
+      });
+      parsed.version = 3;
+      // Persist with the next successful mutation; a full quota must not destroy v2 data.
+      this.lastSerialized = raw;
+      return parsed;
     }
     const fresh = seedDb();
     this.persist(fresh);
     return fresh;
   }
-  private persist(db = this.db) {
+  private persist(db: DB) {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
-    } catch (e) {
-      console.warn("persist failed", e);
+      const serialized = JSON.stringify(db);
+      localStorage.setItem(STORAGE_KEY, serialized);
+      this.lastSerialized = serialized;
+    }
+    catch {
+      throw new ApiError("ذخیره انجام نشد؛ فضای ذخیره‌سازی مرورگر کافی نیست یا دسترسی مسدود است. حجم تصاویر را کم کنید یا از آدرس تصویر استفاده کنید. داده‌های قبلی تغییر نکرده‌اند", 507);
     }
   }
   get(): DB {
+    const raw = this.readStorage();
+    // Pick up edits from other tabs instead of overwriting them with a stale in-memory copy.
+    if (!this.db || raw !== this.lastSerialized) this.db = this.load(raw);
     return this.db;
   }
   mutate<T>(fn: (db: DB) => T): T {
-    const out = fn(this.db);
-    this.persist();
-    return out;
+    const draft = structuredClone(this.get());
+    const result = fn(draft);
+    this.persist(draft); // Commit to memory only after durable storage succeeded.
+    this.db = draft;
+    return structuredClone(result);
   }
   reset() {
-    this.db = seedDb();
-    this.persist();
+    const fresh = seedDb();
+    this.persist(fresh);
+    this.db = fresh;
   }
 }
 
@@ -134,7 +170,9 @@ const publicUser = (u: StoredUser): User => {
 const clone = <T,>(x: T): T => structuredClone(x);
 
 export class LocalApi implements BankApi {
-  private currentToken: string | null = localStorage.getItem(SESSION_KEY);
+  private currentToken: string | null = (() => {
+    try { return localStorage.getItem(SESSION_KEY); } catch { return null; }
+  })();
 
   private async delay() {
     await sleep(MOCK_LATENCY_MS);
@@ -265,7 +303,9 @@ export class LocalApi implements BankApi {
     return clone(store.get().sources);
   }
   async getLessons() {
-    return clone(store.get().lessons);
+    const db = store.get();
+    const user = this.currentToken ? db.users.find((u) => u.id === db.sessions[this.currentToken!]) : undefined;
+    return clone(db.lessons.filter((l) => l.status !== "draft" || user?.role === "admin"));
   }
   async getSettings() {
     return clone(store.get().settings);
@@ -277,8 +317,10 @@ export class LocalApi implements BankApi {
     const db = store.get();
     const user = this.currentToken ? db.users.find((u) => u.id === db.sessions[this.currentToken!]) : undefined;
     const qById = (id: ID) => db.questions.find((x) => x.id === id);
-    const list = applyQuestionFilter(db.questions, filter, {
+    const canonicalFilter = { ...filter, topicIds: filter.topicIds?.map((id) => db.topics.find((t) => t.id === id || t.mergedIds?.includes(id))?.id ?? id) };
+    const list = applyQuestionFilter(db.questions, canonicalFilter, {
       subjects: db.subjects,
+      includeInactive: filter.includeInactive === true && user?.role === "admin",
       purchasedSubjectIds: user?.purchasedSubjectIds,
       bookmarkedQuestionIds: user?.bookmarkedQuestionIds,
       answerStates: user ? buildAnswerStateMap(db.attempts.filter((a) => a.userId === user.id), qById) : undefined,
@@ -480,6 +522,7 @@ export class LocalApi implements BankApi {
       a.status = "finished";
       a.finishedAt = nowIso();
       a.result = computeResult(qs, answers, a.negativeMarking);
+      a.resultQuestions = qs.map(({ id, subjectIds, topicIds, correctIndex }) => ({ id, subjectIds: [...subjectIds], topicIds: [...topicIds], correctIndex }));
       return clone(a);
     });
   }
@@ -526,7 +569,7 @@ export class LocalApi implements BankApi {
       return store.mutate((db) => {
         const s = db.subjects.find((x) => x.id === id);
         if (!s) throw new ApiError("درس یافت نشد", 404);
-        Object.assign(s, patch);
+        Object.assign(s, patch, { id });
         return clone(s);
       });
     },
@@ -534,6 +577,11 @@ export class LocalApi implements BankApi {
       this.requireAdmin();
       store.mutate((db) => {
         if (db.questions.some((q) => q.subjectIds.includes(id))) throw new ApiError("این درس دارای سوال است؛ ابتدا سوالات را منتقل یا حذف کنید");
+        const topicIds = new Set(db.topics.filter((t) => t.subjectId === id).map((t) => t.id));
+        if (db.lessons.some((l) => topicIds.has(l.topicId)) || db.examTemplates.some((e) => e.blueprint?.some((r) => r.subjectId === id))
+          || db.attempts.some((a) => a.result?.bySubject[id] || a.resultQuestions?.some((q) => q.subjectIds.includes(id)))) {
+          throw new ApiError("این درس دارای درسنامه یا سابقه‌ی آزمون است؛ به‌جای حذف، آن را غیرفعال کنید");
+        }
         db.subjects = db.subjects.filter((s) => s.id !== id);
         db.topics = db.topics.filter((t) => t.subjectId !== id);
       });
@@ -542,25 +590,59 @@ export class LocalApi implements BankApi {
     createTopic: async (input: Omit<Topic, "id">) => {
       this.requireAdmin();
       return store.mutate((db) => {
-        const t: Topic = { ...input, id: uid("topic") };
+        const title = validateTopicTitle(db, input.subjectId, input.title);
+        if (!Number.isFinite(input.order) || input.order < 0) throw new ApiError("ترتیب مبحث معتبر نیست");
+        const t: Topic = { id: uid("topic"), subjectId: input.subjectId, title, order: input.order };
         db.topics.push(t);
         return clone(t);
       });
     },
-    updateTopic: async (id: ID, patch: Partial<Topic>) => {
+    updateTopic: async (id: ID, patch: Partial<Pick<Topic, "title" | "order">>) => {
       this.requireAdmin();
       return store.mutate((db) => {
-        const t = db.topics.find((x) => x.id === id);
-        if (!t) throw new ApiError("مبحث یافت نشد", 404);
-        Object.assign(t, patch);
-        return clone(t);
+        const topic = db.topics.find((x) => x.id === id);
+        if (!topic) throw new ApiError("مبحث یافت نشد", 404);
+        if (patch.title !== undefined) {
+          const title = validateTopicTitle(db, topic.subjectId, patch.title, [id]);
+          if (catalogNameKey(topic.title) !== catalogNameKey(title)) topic.aliases = unique([...(topic.aliases ?? []), topic.title]);
+          topic.title = title;
+        }
+        if (patch.order !== undefined) {
+          if (!Number.isFinite(patch.order) || patch.order < 0) throw new ApiError("ترتیب مبحث معتبر نیست");
+          topic.order = patch.order;
+        }
+        return clone(topic);
       });
+    },
+    reorderTopics: async (subjectId: ID, topicIds: ID[]) => {
+      this.requireAdmin();
+      return store.mutate((db) => {
+        const topics = db.topics.filter((t) => t.subjectId === subjectId);
+        if (topics.length !== topicIds.length || unique(topicIds).length !== topics.length || topics.some((t) => !topicIds.includes(t.id))) {
+          throw new ApiError("فهرست مباحث تغییر کرده است؛ دوباره تلاش کنید");
+        }
+        topics.forEach((t) => { t.order = topicIds.indexOf(t.id) + 1; });
+        return topics.sort((a, b) => a.order - b.order);
+      });
+    },
+    previewTopicMerge: async (input: TopicMergeInput) => {
+      this.requireAdmin();
+      return clone(planTopicMerge(store.get(), input));
+    },
+    mergeTopics: async (input: TopicMergeInput) => {
+      this.requireAdmin();
+      return store.mutate((db) => applyTopicMerge(db, input));
     },
     deleteTopic: async (id: ID) => {
       this.requireAdmin();
       store.mutate((db) => {
+        if (!db.topics.some((t) => t.id === id)) throw new ApiError("مبحث یافت نشد", 404);
+        if (db.questions.some((q) => q.topicIds.includes(id)) || db.lessons.some((l) => l.topicId === id)
+          || db.examTemplates.some((e) => e.blueprint?.some((r) => r.topicIds.includes(id)))
+          || db.attempts.some((a) => a.result?.byTopic[id] || a.resultQuestions?.some((q) => q.topicIds.includes(id)))) {
+          throw new ApiError("مبحثِ دارای سوال، درسنامه یا سابقه‌ی آزمون قابل حذف نیست؛ از ادغام استفاده کنید");
+        }
         db.topics = db.topics.filter((t) => t.id !== id);
-        db.questions.forEach((q) => (q.topicIds = q.topicIds.filter((t) => t !== id)));
       });
     },
 
@@ -577,7 +659,7 @@ export class LocalApi implements BankApi {
       return store.mutate((db) => {
         const s = db.sources.find((x) => x.id === id);
         if (!s) throw new ApiError("منبع یافت نشد", 404);
-        Object.assign(s, patch);
+        Object.assign(s, patch, { id });
         return clone(s);
       });
     },
@@ -589,21 +671,27 @@ export class LocalApi implements BankApi {
       });
     },
 
-    createQuestion: async (input: Omit<Question, "id" | "createdAt" | "updatedAt">) => {
+    createQuestion: async (input: QuestionSaveInput) => {
       this.requireAdmin();
       return store.mutate((db) => {
-        const qn: Question = { ...input, id: uid("q"), createdAt: nowIso(), updatedAt: nowIso() };
-        db.questions.push(qn);
-        return clone(qn);
+        if (input.newLessons !== undefined && !Array.isArray(input.newLessons)) throw new ApiError("درسنامه‌های جدید باید آرایه باشند");
+        const lessons = (input.newLessons ?? []).map((l) => insertLesson(db, l));
+        const valid = validateQuestion(db, { ...input, lessonIds: [...(input.lessonIds ?? []), ...lessons.map((l) => l.id)] });
+        const question: Question = { ...valid, id: uid("q"), createdAt: nowIso(), updatedAt: nowIso() };
+        db.questions.push(question);
+        return clone(question);
       });
     },
-    updateQuestion: async (id: ID, patch: Partial<Question>) => {
+    updateQuestion: async (id: ID, patch: QuestionPatch) => {
       this.requireAdmin();
       return store.mutate((db) => {
-        const qn = db.questions.find((x) => x.id === id);
-        if (!qn) throw new ApiError("سوال یافت نشد", 404);
-        Object.assign(qn, patch, { updatedAt: nowIso() });
-        return clone(qn);
+        const question = db.questions.find((x) => x.id === id);
+        if (!question) throw new ApiError("سوال یافت نشد", 404);
+        if (patch.newLessons !== undefined && !Array.isArray(patch.newLessons)) throw new ApiError("درسنامه‌های جدید باید آرایه باشند");
+        const lessons = (patch.newLessons ?? []).map((l) => insertLesson(db, l));
+        const valid = validateQuestion(db, { ...question, ...patch, lessonIds: [...(patch.lessonIds ?? question.lessonIds ?? []), ...lessons.map((l) => l.id)] }, question);
+        Object.assign(question, valid, { updatedAt: nowIso() });
+        return clone(question);
       });
     },
     deleteQuestion: async (id: ID) => {
@@ -617,78 +705,40 @@ export class LocalApi implements BankApi {
     bulkImportQuestions: async (rows: BulkQuestionRow[]): Promise<BulkImportResult> => {
       this.requireAdmin();
       await this.delay();
-      return store.mutate((db) => {
-        const errors: BulkImportResult["errors"] = [];
-        let imported = 0;
-        const findSubject = (ref: string) => db.subjects.find((s) => s.id === ref || s.title === ref.trim());
-        const findTopic = (ref: string, subjIds: ID[]) => db.topics.find((t) => (t.id === ref || t.title === ref.trim()) && (subjIds.length === 0 || subjIds.includes(t.subjectId)));
-        const findSource = (ref?: string) => (ref ? db.sources.find((s) => s.id === ref || s.title === ref.trim()) : undefined);
-
-        rows.forEach((row, i) => {
-          try {
-            const subjects = (row.subjects ?? []).map(findSubject);
-            if (!subjects.length || subjects.some((s) => !s)) throw new Error("درس نامعتبر");
-            const subjIds = subjects.map((s) => s!.id);
-            const topics = (row.topics ?? []).map((t) => findTopic(t, subjIds));
-            if (!topics.length || topics.some((t) => !t)) throw new Error("مبحث نامعتبر");
-            if (!row.stem?.trim()) throw new Error("صورت سوال خالی است");
-            if (!Array.isArray(row.options) || row.options.length !== 4) throw new Error("باید دقیقاً ۴ گزینه وجود داشته باشد");
-            let correct = Number(row.correct);
-            if (correct >= 1 && correct <= 4 && !(correct === 0)) correct = correct - 1; // ورودی ۱..۴
-            if (!(correct >= 0 && correct <= 3)) throw new Error("گزینه‌ی صحیح نامعتبر");
-            const source = findSource(row.source) ?? db.sources.find((s) => s.id === "src-talifi")!;
-            const qn: Question = {
-              id: uid("q"),
-              subjectIds: subjIds,
-              topicIds: topics.map((t) => t!.id),
-              stem: row.stem,
-              options: row.options as Question["options"],
-              correctIndex: correct,
-              explanation: row.explanation ?? "",
-              difficulty: (row.difficulty ?? 2) as Question["difficulty"],
-              sourceId: source.id,
-              tags: row.tags ?? [],
-              images: row.images ?? [],
-              estimatedSeconds: row.estimatedSeconds ?? 90,
-              isActive: true,
-              createdAt: nowIso(),
-              updatedAt: nowIso(),
-            };
-            db.questions.push(qn);
-            imported++;
-          } catch (e) {
-            errors.push({ row: i + 1, message: (e as Error).message });
-          }
-        });
-        return { imported, errors };
-      });
+      return store.mutate((db) => importQuestionRows(db, rows));
     },
 
-    createLesson: async (input: Omit<Lesson, "id">) => {
+    createLesson: async (input: LessonInput) => {
       this.requireAdmin();
-      return store.mutate((db) => {
-        const l: Lesson = { ...input, id: uid("les") };
-        db.lessons.push(l);
-        return clone(l);
-      });
+      return store.mutate((db) => insertLesson(db, input));
     },
-    updateLesson: async (id: ID, patch: Partial<Lesson>) => {
+    updateLesson: async (id: ID, patch: Partial<LessonInput>) => {
       this.requireAdmin();
       return store.mutate((db) => {
-        const l = db.lessons.find((x) => x.id === id);
-        if (!l) throw new ApiError("درسنامه یافت نشد", 404);
-        Object.assign(l, patch);
-        return clone(l);
+        const lesson = db.lessons.find((x) => x.id === id);
+        if (!lesson) throw new ApiError("درسنامه یافت نشد", 404);
+        const valid = validateLesson(db, { ...lesson, ...patch });
+        const subjectId = db.topics.find((t) => t.id === valid.topicId)!.subjectId;
+        if (db.questions.some((q) => q.lessonIds?.includes(id) && !q.subjectIds.includes(subjectId))) {
+          throw new ApiError("این درسنامه به سوالی از درس قبلی متصل است؛ ابتدا اتصال را بردارید یا مبحثی از همان درس انتخاب کنید");
+        }
+        Object.assign(lesson, valid, { updatedAt: nowIso() });
+        return clone(lesson);
       });
     },
     deleteLesson: async (id: ID) => {
       this.requireAdmin();
       store.mutate((db) => {
+        if (!db.lessons.some((l) => l.id === id)) throw new ApiError("درسنامه یافت نشد", 404);
         db.lessons = db.lessons.filter((l) => l.id !== id);
+        db.questions.forEach((q) => {
+          if (q.lessonIds?.includes(id)) { q.lessonIds = q.lessonIds.filter((ref) => ref !== id); q.updatedAt = nowIso(); }
+        });
       });
     },
 
     resetDemoData: async () => {
+      this.requireAdmin();
       store.reset();
       this.currentToken = null;
       localStorage.removeItem(SESSION_KEY);

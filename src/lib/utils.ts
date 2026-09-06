@@ -78,7 +78,7 @@ export const generateReferralCode = (name: string): string => {
 };
 
 /** محاسبه‌ی نتیجه‌ی آزمون (درصد کنکوری با نمره منفی) */
-export const computeResult = (questions: Question[], answers: Record<ID, AttemptAnswer>, negativeMarking: boolean): AttemptResult => {
+export const computeResult = (questions: Pick<Question, "id" | "subjectIds" | "topicIds" | "correctIndex">[], answers: Record<ID, AttemptAnswer>, negativeMarking: boolean): AttemptResult => {
   type Bucket = { correct: number; wrong: number; blank: number; percent: number };
   const mk = (): Bucket => ({ correct: 0, wrong: 0, blank: 0, percent: 0 });
   const total = mk();
@@ -93,8 +93,8 @@ export const computeResult = (questions: Question[], answers: Record<ID, Attempt
     const a = answers[qn.id];
     const key: keyof Omit<Bucket, "percent"> = a?.selectedIndex == null ? "blank" : a.selectedIndex === qn.correctIndex ? "correct" : "wrong";
     bump(total, key);
-    for (const sid of qn.subjectIds) bump((bySubject[sid] ||= mk()), key);
-    for (const tid of qn.topicIds) bump((byTopic[tid] ||= mk()), key);
+    for (const sid of new Set(qn.subjectIds)) bump((bySubject[sid] ||= mk()), key);
+    for (const tid of new Set(qn.topicIds)) bump((byTopic[tid] ||= mk()), key);
   }
 
   const pct = (b: Bucket) => {

@@ -2,7 +2,7 @@ import { Bookmark, BookOpen, Database, FileText, FolderHeart, Gift, LayoutDashbo
 import { useEffect, type ReactNode } from "react";
 import { HashRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AppShell, type NavItem } from "@/components/layout/AppShell";
-import { Spinner, ToastViewport } from "@/components/ui";
+import { Button, Spinner, ToastViewport } from "@/components/ui";
 import { AppProvider, useApp } from "@/store/AppContext";
 import Landing from "@/pages/Landing";
 import Auth from "@/pages/Auth";
@@ -18,6 +18,7 @@ import Lessons, { LessonDetail } from "@/pages/app/Lessons";
 import Referral, { WalletPage } from "@/pages/app/Referral";
 import AdminQuestions from "@/pages/admin/AdminQuestions";
 import AdminImport from "@/pages/admin/AdminImport";
+import AdminLessons from "@/pages/admin/AdminLessons";
 import AdminCatalog from "@/pages/admin/AdminCatalog";
 import { AdminOverview, AdminSources, AdminUsers } from "@/pages/admin/AdminMisc";
 
@@ -51,6 +52,7 @@ function AdminLayout() {
   const nav: NavItem[] = [
     { to: "/admin", label: "نمای کلی", icon: <LayoutDashboard />, end: true },
     { to: "/admin/questions", label: "سوالات", icon: <FileText /> },
+    { to: "/admin/lessons", label: "درسنامه‌ها", icon: <BookOpen /> },
     { to: "/admin/import", label: "ورود گروهی", icon: <Upload /> },
     { to: "/admin/catalog", label: "درس‌ها و مباحث", icon: <Database /> },
     { to: "/admin/sources", label: "منابع", icon: <Tag /> },
@@ -67,9 +69,21 @@ function ScrollToTop() {
   return null;
 }
 
+function DataBoundary({ children }: { children: ReactNode }) {
+  const { booting, bootError } = useApp();
+  if (booting) return <Spinner className="min-h-screen" />;
+  if (bootError) return <main className="mx-auto flex min-h-screen max-w-xl flex-col items-center justify-center gap-4 p-6 text-center">
+    <h1 className="text-xl font-bold text-slate-900">بارگذاری داده‌ها انجام نشد</h1>
+    <p role="alert" className="text-sm leading-8 text-rose-700">{bootError}</p>
+    <Button onClick={() => window.location.reload()}>تلاش دوباره</Button>
+  </main>;
+  return children;
+}
+
 export default function App() {
   return (
     <AppProvider>
+      <DataBoundary>
       <HashRouter>
         <ScrollToTop />
         <Routes>
@@ -119,6 +133,7 @@ export default function App() {
           >
             <Route index element={<AdminOverview />} />
             <Route path="questions" element={<AdminQuestions />} />
+            <Route path="lessons" element={<AdminLessons />} />
             <Route path="import" element={<AdminImport />} />
             <Route path="catalog" element={<AdminCatalog />} />
             <Route path="sources" element={<AdminSources />} />
@@ -129,6 +144,7 @@ export default function App() {
         </Routes>
         <ToastViewport />
       </HashRouter>
+      </DataBoundary>
     </AppProvider>
   );
 }

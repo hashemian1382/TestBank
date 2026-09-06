@@ -1,0 +1,41 @@
+[
+  {
+    "subjects": ["cs-os"],
+    "topics": ["زمان‌بندی پیشرفته و تحلیل کوانتوم"],
+    "stem": "در الگوریتم Round Robin، با افزایش بسیار زیاد کوانتوم زمانی رفتار زمان‌بند به کدام روش نزدیک می‌شود؟",
+    "options": ["FCFS", "SJF", "Priority", "Multilevel Queue"],
+    "correct": 1,
+    "explanation": "هر فرآیند تقریباً تا پایان اجرا می‌شود؛ در نتیجه رفتار به **FCFS** نزدیک است.",
+    "difficulty": 1,
+    "source": "src-talifi",
+    "tags": ["زمان‌بندی", "کوانتوم"],
+    "estimatedSeconds": 60
+  },
+  {
+    "subjects": ["cs-os", "cs-dsa"],
+    "topics": [
+      { "subject": "cs-os", "title": "کاربرد صف در زمان‌بندی" },
+      "cs-dsa-t2"
+    ],
+    "stem": "کدام ساختار داده برای نگه‌داری فرآیندهای آماده با سیاست ورود به ترتیب مناسب است؟",
+    "options": ["پشته", "صف FIFO", "درخت جستجوی دودویی", "جدول درهم‌سازی"],
+    "correct": 2,
+    "explanation": "صف **FIFO** ترتیب ورود را حفظ می‌کند.",
+    "difficulty": 1,
+    "source": "src-talifi",
+    "estimatedSeconds": 45
+  },
+  {
+    "subjects": ["cs-os"],
+    "topics": ["زمان‌بندی پیشرفته و تحلیل کوانتوم"],
+    "stem": "کوانتوم زمانی بسیار کوچک معمولاً چه اثری دارد؟",
+    "options": ["حذف سربار سیستم", "افزایش سربار تعویض متن", "حذف همه‌ی وقفه‌ها", "اجرای غیرقابل وقفه‌ی فرآیند"],
+    "correct": 1,
+    "correctBase": 0,
+    "explanation": "با کوچک‌شدن کوانتوم، تعداد تعویض متن‌ها و سربار آن‌ها افزایش می‌یابد.",
+    "difficulty": 2,
+    "estimatedSeconds": 60,
+    "isActive": true,
+    "lessonIds": []
+  }
+]

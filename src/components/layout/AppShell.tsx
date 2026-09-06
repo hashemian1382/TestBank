@@ -40,7 +40,7 @@ export function AppShell({ nav, title, accent = "brand" }: { nav: NavItem[]; tit
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between px-5 py-5">
         <Logo />
-        <button className="lg:hidden" onClick={() => setOpen(false)}>
+        <button aria-label="بستن منو" className="lg:hidden" onClick={() => setOpen(false)}>
           <X className="h-5 w-5 text-slate-500" />
         </button>
       </div>
@@ -104,7 +104,7 @@ export function AppShell({ nav, title, accent = "brand" }: { nav: NavItem[]; tit
       {/* topbar mobile */}
       <header className="sticky top-0 z-20 flex items-center justify-between border-b border-slate-200 bg-white/80 px-4 py-3 backdrop-blur lg:hidden">
         <Logo />
-        <button onClick={() => setOpen(true)} className="rounded-lg p-2 text-slate-600 hover:bg-slate-100">
+        <button aria-label="باز کردن منو" onClick={() => setOpen(true)} className="rounded-lg p-2 text-slate-600 hover:bg-slate-100">
           <Menu className="h-5 w-5" />
         </button>
       </header>

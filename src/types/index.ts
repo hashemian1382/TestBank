@@ -40,6 +40,10 @@ export interface Topic {
   subjectId: ID;
   title: string;
   order: number;
+  /** عنوان‌های قبلی؛ برای تشخیص ورودی‌های قدیمی پس از تغییر نام/ادغام */
+  aliases?: string[];
+  /** شناسه‌های ادغام‌شده؛ برای ارجاع‌های قدیمی */
+  mergedIds?: ID[];
 }
 
 /** منبع سوال */
@@ -73,6 +77,8 @@ export interface Question {
   /** یک سوال می‌تواند به چند درس تعلق داشته باشد (مثلاً فیزیک ریاضی و فیزیک تجربی) */
   subjectIds: ID[];
   topicIds: ID[];
+  /** اتصال مستقیم به درسنامه‌ها؛ نبودن این فیلد در داده‌های قدیمی معادل [] است. */
+  lessonIds?: ID[];
   /** متن صورت سوال (پشتیبانی از LaTeX با $...$ و $$...$$ و تصویر با [[img:ID]]) */
   stem: string;
   options: [string, string, string, string];
@@ -91,7 +97,9 @@ export interface Question {
   updatedAt: string;
 }
 
-/** درسنامه (به مبحث وصل است) */
+export type LessonStatus = "draft" | "published";
+
+/** درسنامه (از طریق مبحث به درس وصل است) */
 export interface Lesson {
   id: ID;
   topicId: ID;
@@ -99,7 +107,16 @@ export interface Lesson {
   content: string;
   images: QuestionImage[];
   readingMinutes: number;
+  summary?: string;
+  tags?: string[];
+  /** درسنامه‌های قدیمی بدون این فیلد منتشرشده محسوب می‌شوند. */
+  status?: LessonStatus;
+  order?: number;
+  createdAt?: string;
+  updatedAt?: string;
 }
+
+export type LessonInput = Omit<Lesson, "id" | "createdAt" | "updatedAt">;
 
 /* -------------------- کاربر و داده‌های کاربر -------------------- */
 
@@ -194,6 +211,8 @@ export interface ExamAttempt {
   finishedAt?: string;
   elapsedSeconds: number;
   result?: AttemptResult;
+  /** تصویر سبک از دسته‌بندی و پاسخ صحیح هنگام اتمام؛ برای بازطبقه‌بندی بدون تغییر نمره. */
+  resultQuestions?: Pick<Question, "id" | "subjectIds" | "topicIds" | "correctIndex">[];
 }
 
 export type TransactionType = "purchase" | "referral-bonus" | "topup" | "signup-bonus";
@@ -228,6 +247,8 @@ export interface AppSettings {
 
 export interface QuestionFilter {
   search?: string;
+  /** فقط مدیر: سوالات غیرفعال هم برگردانده شوند. */
+  includeInactive?: boolean;
   domainIds?: ExamDomainId[];
   subjectIds?: ID[];
   topicIds?: ID[];
@@ -264,23 +285,54 @@ export interface AuthSession {
 }
 
 export type QuestionInput = Omit<Question, "id" | "createdAt" | "updatedAt">;
+/** درسنامه‌های جدید و سوال در یک تراکنش ذخیره می‌شوند. */
+export type QuestionSaveInput = QuestionInput & { newLessons?: LessonInput[] };
+export type QuestionPatch = Partial<QuestionInput> & { newLessons?: LessonInput[] };
+
+/** عنوان بدون scope روی همه‌ی درس‌های سوال اعمال می‌شود؛ شیء برای scope صریح است. */
+export type BulkTopicRef = string | { subject: string; title: string };
+
+export interface TopicMergeInput {
+  subjectId: ID;
+  topicIds: ID[];
+  title: string;
+  /** در صورت تعیین باید یکی از مباحث انتخابی باشد؛ در غیر این صورت خودکار انتخاب می‌شود. */
+  targetTopicId?: ID;
+}
+
+export interface TopicMergePreview {
+  targetTopic: Topic;
+  sourceTopics: Topic[];
+  affectedQuestions: number;
+  affectedLessons: number;
+  affectedTemplates: number;
+  affectedAttempts: number;
+}
+
+export interface TopicMergeResult extends TopicMergePreview {
+  removedTopicIds: ID[];
+}
 
 /** فرمت ورود گروهی سوالات (JSON) */
 export interface BulkQuestionRow {
   subjects: string[]; // شناسه یا عنوان درس
-  topics: string[]; // شناسه یا عنوان مبحث
+  topics: BulkTopicRef[]; // شناسه، عنوان یا { subject, title }
   stem: string;
   options: string[];
-  correct: number; // ۱ تا ۴ یا ۰ تا ۳ (به‌صورت هوشمند تشخیص داده می‌شود)
+  correct: number; // ۱ تا ۴؛ برای ورودی صفرمبنا correctBase را صریح تعیین کنید.
+  correctBase?: 0 | 1;
   explanation?: string;
   difficulty?: Difficulty;
   source?: string; // شناسه یا عنوان منبع
   tags?: string[];
   images?: QuestionImage[];
   estimatedSeconds?: number;
+  lessonIds?: ID[];
+  isActive?: boolean;
 }
 
 export interface BulkImportResult {
   imported: number;
+  createdTopics: Topic[];
   errors: { row: number; message: string }[];
 }

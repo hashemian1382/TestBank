@@ -14,7 +14,12 @@ import type {
   LoginInput,
   Question,
   QuestionFilter,
-  QuestionInput,
+  QuestionSaveInput,
+  QuestionPatch,
+  LessonInput,
+  TopicMergeInput,
+  TopicMergePreview,
+  TopicMergeResult,
   Referral,
   RegisterInput,
   Source,
@@ -92,20 +97,23 @@ export interface BankApi {
     deleteSubject(id: ID): Promise<void>;
 
     createTopic(input: Omit<Topic, "id">): Promise<Topic>;
-    updateTopic(id: ID, patch: Partial<Topic>): Promise<Topic>;
+    updateTopic(id: ID, patch: Partial<Pick<Topic, "title" | "order">>): Promise<Topic>;
+    reorderTopics(subjectId: ID, topicIds: ID[]): Promise<Topic[]>;
+    previewTopicMerge(input: TopicMergeInput): Promise<TopicMergePreview>;
+    mergeTopics(input: TopicMergeInput): Promise<TopicMergeResult>; // POST /admin/topics/merge (atomic)
     deleteTopic(id: ID): Promise<void>;
 
     createSource(input: Omit<Source, "id">): Promise<Source>;
     updateSource(id: ID, patch: Partial<Source>): Promise<Source>;
     deleteSource(id: ID): Promise<void>;
 
-    createQuestion(input: QuestionInput): Promise<Question>;
-    updateQuestion(id: ID, patch: Partial<Question>): Promise<Question>;
+    createQuestion(input: QuestionSaveInput): Promise<Question>;
+    updateQuestion(id: ID, patch: QuestionPatch): Promise<Question>;
     deleteQuestion(id: ID): Promise<void>;
     bulkImportQuestions(rows: BulkQuestionRow[]): Promise<BulkImportResult>;
 
-    createLesson(input: Omit<Lesson, "id">): Promise<Lesson>;
-    updateLesson(id: ID, patch: Partial<Lesson>): Promise<Lesson>;
+    createLesson(input: LessonInput): Promise<Lesson>;
+    updateLesson(id: ID, patch: Partial<LessonInput>): Promise<Lesson>;
     deleteLesson(id: ID): Promise<void>;
 
     resetDemoData(): Promise<void>;

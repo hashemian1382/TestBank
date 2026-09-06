@@ -52,6 +52,7 @@ export function AdminOverview() {
             {[
               ["/admin/questions", "مدیریت سوالات"],
               ["/admin/import", "ورود گروهی"],
+              ["/admin/lessons", "مدیریت درسنامه‌ها"],
               ["/admin/catalog", "درس‌ها و مباحث"],
               ["/admin/users", "کاربران"],
             ].map(([to, l]) => (

@@ -1,7 +1,8 @@
 import katex from "katex";
-import { memo, useMemo, type ReactNode } from "react";
+import { createElement, memo, useMemo, type ReactNode } from "react";
 import type { QuestionImage } from "@/types";
-import { resolveMediaUrl } from "@/services";
+import { resolveMediaUrl } from "@/services/config";
+import { parseRichBlocks } from "@/lib/richText";
 import { cn } from "@/lib/utils";
 
 /**
@@ -18,13 +19,14 @@ interface Props {
   className?: string;
   /** حالت فشرده برای گزینه‌ها */
   inline?: boolean;
+  headingIdPrefix?: string;
 }
 
 const renderTex = (tex: string, display: boolean) => {
   try {
     return katex.renderToString(tex, { throwOnError: false, displayMode: display, strict: "ignore", trust: false });
   } catch {
-    return `<code>${tex}</code>`;
+    return `<code>${tex.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!)}</code>`;
   }
 };
 
@@ -54,106 +56,6 @@ const renderInline = (s: string, keyPrefix: string): ReactNode[] => {
 };
 
 /* ---------- block parsing ---------- */
-type Block =
-  | { type: "p"; text: string }
-  | { type: "h"; text: string }
-  | { type: "math"; tex: string }
-  | { type: "img"; id: string }
-  | { type: "ul"; items: string[] }
-  | { type: "ol"; items: string[] }
-  | { type: "quote"; text: string }
-  | { type: "table"; rows: string[][] }
-  | { type: "code"; text: string };
-
-const parseBlocks = (raw: string): Block[] => {
-  // extract display math first
-  const mathStore: string[] = [];
-  const text = raw.replace(/\$\$([\s\S]+?)\$\$/g, (_, tex: string) => {
-    mathStore.push(tex.trim());
-    return `\n@@MATH${mathStore.length - 1}@@\n`;
-  });
-  const lines = text.split("\n");
-  const blocks: Block[] = [];
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    const t = line.trim();
-    if (!t) {
-      i++;
-      continue;
-    }
-    const m = t.match(/^@@MATH(\d+)@@$/);
-    if (m) {
-      blocks.push({ type: "math", tex: mathStore[Number(m[1])] });
-      i++;
-      continue;
-    }
-    const img = t.match(/^\[\[img:([^\]]+)\]\]$/);
-    if (img) {
-      blocks.push({ type: "img", id: img[1] });
-      i++;
-      continue;
-    }
-    if (t.startsWith("```")) {
-      const buf: string[] = [];
-      i++;
-      while (i < lines.length && !lines[i].trim().startsWith("```")) buf.push(lines[i++]);
-      i++;
-      blocks.push({ type: "code", text: buf.join("\n") });
-      continue;
-    }
-    if (/^#{1,6}\s/.test(t)) {
-      blocks.push({ type: "h", text: t.replace(/^#{1,6}\s/, "") });
-      i++;
-      continue;
-    }
-    if (t.startsWith(">")) {
-      const buf: string[] = [];
-      while (i < lines.length && lines[i].trim().startsWith(">")) buf.push(lines[i++].trim().replace(/^>\s?/, ""));
-      blocks.push({ type: "quote", text: buf.join(" ") });
-      continue;
-    }
-    if (t.startsWith("|")) {
-      const rows: string[][] = [];
-      while (i < lines.length && lines[i].trim().startsWith("|")) {
-        const row = lines[i].trim();
-        i++;
-        if (/^\|[\s:-]+\|/.test(row) && !/[^\s|:-]/.test(row)) continue; // separator
-        rows.push(
-          row
-            .replace(/^\||\|$/g, "")
-            .split("|")
-            .map((c) => c.trim())
-        );
-      }
-      blocks.push({ type: "table", rows });
-      continue;
-    }
-    if (/^[-*]\s/.test(t)) {
-      const items: string[] = [];
-      while (i < lines.length && /^[-*]\s/.test(lines[i].trim())) items.push(lines[i++].trim().replace(/^[-*]\s/, ""));
-      blocks.push({ type: "ul", items });
-      continue;
-    }
-    if (/^\d+[.)]\s/.test(t)) {
-      const items: string[] = [];
-      while (i < lines.length && /^\d+[.)]\s/.test(lines[i].trim())) items.push(lines[i++].trim().replace(/^\d+[.)]\s/, ""));
-      blocks.push({ type: "ol", items });
-      continue;
-    }
-    // paragraph: merge consecutive plain lines
-    const buf: string[] = [t];
-    i++;
-    while (i < lines.length) {
-      const nt = lines[i].trim();
-      if (!nt || /^(@@MATH\d+@@|\[\[img:|#{1,6}\s|>|\||[-*]\s|\d+[.)]\s|```)/.test(nt)) break;
-      buf.push(nt);
-      i++;
-    }
-    blocks.push({ type: "p", text: buf.join("\n") });
-  }
-  return blocks;
-};
 
 function Figure({ img }: { img: QuestionImage }) {
   return (
@@ -164,13 +66,13 @@ function Figure({ img }: { img: QuestionImage }) {
   );
 }
 
-export const RichText = memo(function RichText({ text, images = [], className, inline }: Props) {
+export const RichText = memo(function RichText({ text, images = [], className, inline, headingIdPrefix }: Props) {
   const content = useMemo(() => {
     if (inline) {
       // در حالت inline: فقط متن یک‌خطی؛ اما اگر display math یا تصویر داشت، fallback به block
       if (!/\$\$|\[\[img:/.test(text)) return <span>{renderInline(text, "i")}</span>;
     }
-    const blocks = parseBlocks(text);
+    const blocks = parseRichBlocks(text);
     const imgMap = new Map(images.map((im) => [im.id, im]));
     return blocks.map((b, idx) => {
       const key = `b${idx}`;
@@ -182,7 +84,7 @@ export const RichText = memo(function RichText({ text, images = [], className, i
           return im ? <Figure key={key} img={im} /> : <div key={key} className="my-2 rounded-lg border border-dashed border-rose-300 bg-rose-50 p-2 text-center text-xs text-rose-600">تصویر «{b.id}» یافت نشد</div>;
         }
         case "h":
-          return <h4 key={key}>{renderInline(b.text, key)}</h4>;
+          return createElement(`h${Math.max(2, b.level)}`, { key, id: headingIdPrefix ? `${headingIdPrefix}-${idx}` : undefined, tabIndex: headingIdPrefix ? -1 : undefined }, renderInline(b.text, key));
         case "quote":
           return (
             <blockquote key={key} className="my-2 rounded-lg border-r-4 border-amber-400 bg-amber-50/70 px-3 py-2 text-sm text-amber-900">
@@ -238,7 +140,7 @@ export const RichText = memo(function RichText({ text, images = [], className, i
           );
       }
     });
-  }, [text, images, inline]);
+  }, [text, images, inline, headingIdPrefix]);
 
-  return inline ? <span className={cn("rich-text", className)}>{content}</span> : <div className={cn("rich-text", className)}>{content}</div>;
+  return inline && !/\$\$|\[\[img:/.test(text) ? <span className={cn("rich-text", className)}>{content}</span> : <div className={cn("rich-text", className)}>{content}</div>;
 });

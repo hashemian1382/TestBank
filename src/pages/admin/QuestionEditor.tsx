@@ -1,15 +1,18 @@
 import { Eye, ImagePlus, Plus, Trash2, Upload } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { Difficulty, Question, QuestionImage, QuestionInput } from "@/types";
 import { QuestionCard } from "@/components/QuestionCard";
-import { Button, Chip, Input, Modal, Select, Textarea, Toggle } from "@/components/ui";
+import { Button, Chip, ConfirmDialog, Input, Modal, Select, Textarea, Toggle } from "@/components/ui";
 import { cn, DIFFICULTY_LABEL, toFa, uid } from "@/lib/utils";
 import { api, ApiError } from "@/services";
+import { useUnsavedChanges } from "@/hooks/useUnsavedChanges";
+import { QuestionLessons, type PendingLesson } from "./QuestionLessons";
 import { useApp } from "@/store/AppContext";
 
 const blank = (sourceId: string): QuestionInput => ({
   subjectIds: [],
   topicIds: [],
+  lessonIds: [],
   stem: "",
   options: ["", "", "", ""],
   correctIndex: 0,
@@ -24,12 +27,37 @@ const blank = (sourceId: string): QuestionInput => ({
 
 export function QuestionEditor({ open, onClose, initial }: { open: boolean; onClose: () => void; initial?: Question }) {
   const { catalog, refreshCatalog, toast } = useApp();
-  const [form, setForm] = useState<QuestionInput>(() => (initial ? { ...initial } : blank(catalog.sources[0]?.id ?? "")));
+  const [form, setForm] = useState<QuestionInput>(() => (initial ? { ...initial, lessonIds: initial.lessonIds ?? [] } : blank(catalog.sources[0]?.id ?? "")));
+  const [pendingLessons, setPendingLessons] = useState<PendingLesson[]>([]);
+  const original = useRef(JSON.stringify(form));
+  const [discard, setDiscard] = useState(false);
+  const dirty = JSON.stringify(form) !== original.current || pendingLessons.length > 0;
+  useUnsavedChanges(dirty);
   const [tagInput, setTagInput] = useState("");
   const [preview, setPreview] = useState(false);
   const [busy, setBusy] = useState(false);
+  const running = useRef(false);
+  const close = () => { if (!busy) { if (dirty) setDiscard(true); else onClose(); } };
+  const toggleSubject = (id: string) => {
+    const removing = form.subjectIds.includes(id);
+    if (removing && pendingLessons.some((l) => catalog.topicById.get(l.input.topicId)?.subjectId === id)) {
+      toast("ابتدا درسنامه‌ی جدید این درس را از سوال بردارید یا درس آن را تغییر دهید", "error"); return;
+    }
+    const subjectIds = removing ? form.subjectIds.filter((s) => s !== id) : [...form.subjectIds, id];
+    const lessonIds = (form.lessonIds ?? []).filter((lid) => {
+      const lesson = catalog.lessonById.get(lid);
+      const topic = lesson && catalog.topicById.get(lesson.topicId);
+      return topic && subjectIds.includes(topic.subjectId);
+    });
+    if (lessonIds.length !== (form.lessonIds ?? []).length) toast("اتصال درسنامه‌های درس برداشته‌شده حذف شد؛ تغییر با ذخیره‌ی سوال نهایی می‌شود", "info");
+    setForm((f) => ({ ...f, subjectIds, topicIds: f.topicIds.filter((tid) => subjectIds.includes(catalog.topicById.get(tid)?.subjectId ?? "")), lessonIds }));
+  };
   const set = <K extends keyof QuestionInput>(k: K, v: QuestionInput[K]) => setForm((f) => ({ ...f, [k]: v }));
 
+  const legacyTopics = form.topicIds.flatMap((id) => {
+    const topic = catalog.topicById.get(id);
+    return topic && !form.subjectIds.includes(topic.subjectId) ? [topic] : [];
+  });
   const topics = useMemo(() => form.subjectIds.flatMap((s) => catalog.topicsBySubject.get(s) ?? []), [form.subjectIds, catalog.topicsBySubject]);
   const previewQ: Question = { ...form, id: initial?.id ?? "preview", createdAt: "", updatedAt: "" };
 
@@ -48,32 +76,37 @@ export function QuestionEditor({ open, onClose, initial }: { open: boolean; onCl
     if (!form.topicIds.length) return toast("حداقل یک مبحث انتخاب کنید", "error");
     if (!form.stem.trim()) return toast("صورت سوال خالی است", "error");
     if (form.options.some((o) => !o.trim())) return toast("همه‌ی گزینه‌ها را پر کنید", "error");
+    if (running.current) return;
+    running.current = true;
     setBusy(true);
     try {
-      if (initial) await api.admin.updateQuestion(initial.id, form);
-      else await api.admin.createQuestion(form);
+      const input = { ...form, newLessons: pendingLessons.map((l) => l.input) };
+      if (initial) await api.admin.updateQuestion(initial.id, input);
+      else await api.admin.createQuestion(input);
       await refreshCatalog();
       toast(initial ? "سوال ویرایش شد" : "سوال اضافه شد", "success");
       onClose();
     } catch (e) {
       toast(e instanceof ApiError ? e.message : "خطا", "error");
     } finally {
+      running.current = false;
       setBusy(false);
     }
   };
 
-  return (
+  return (<>
     <Modal
       open={open}
-      onClose={onClose}
+      onClose={close}
+      locked={busy}
       title={initial ? `ویرایش سوال ${initial.id}` : "سوال جدید"}
       size="xl"
       footer={
         <>
-          <Button variant="ghost" onClick={() => setPreview((p) => !p)} icon={<Eye className="h-4 w-4" />}>
+          <Button variant="ghost" disabled={busy} onClick={() => setPreview((p) => !p)} icon={<Eye className="h-4 w-4" />}>
             {preview ? "بازگشت به فرم" : "پیش‌نمایش"}
           </Button>
-          <Button variant="ghost" onClick={onClose}>
+          <Button variant="ghost" disabled={busy} onClick={close}>
             انصراف
           </Button>
           <Button onClick={save} loading={busy}>
@@ -85,13 +118,13 @@ export function QuestionEditor({ open, onClose, initial }: { open: boolean; onCl
       {preview ? (
         <QuestionCard question={previewQ} showAnswerByDefault />
       ) : (
-        <div className="space-y-5">
+        <fieldset disabled={busy} className="space-y-5">
           {/* subjects & topics */}
           <div>
             <div className="mb-1.5 text-sm font-medium text-slate-700">درس(ها)</div>
             <div className="flex flex-wrap gap-1.5">
               {catalog.subjects.map((s) => (
-                <Chip key={s.id} active={form.subjectIds.includes(s.id)} onClick={() => set("subjectIds", form.subjectIds.includes(s.id) ? form.subjectIds.filter((x) => x !== s.id) : [...form.subjectIds, s.id])}>
+                <Chip key={s.id} active={form.subjectIds.includes(s.id)} onClick={() => toggleSubject(s.id)}>
                   {s.emoji} {s.title}
                 </Chip>
               ))}
@@ -109,6 +142,11 @@ export function QuestionEditor({ open, onClose, initial }: { open: boolean; onCl
               </div>
             </div>
           )}
+
+          {legacyTopics.length > 0 && <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-7 text-amber-800">
+            <p>این سوال قدیمی به مباحثی از درس‌های دیگر هم ارجاع دارد. این ارجاع‌ها و دسترسی خرید فعلی بدون تغییر حفظ می‌شوند؛ برای دسته‌بندی یکدست می‌توانید درس مربوط را اضافه کنید یا ارجاع را بردارید.</p>
+            <div className="mt-2 flex flex-wrap gap-2">{legacyTopics.map((topic) => <Chip key={topic.id} active onClick={() => set("topicIds", form.topicIds.filter((id) => id !== topic.id))}>{topic.title} • {catalog.subjectById.get(topic.subjectId)?.title} ×</Chip>)}</div>
+          </div>}
 
           <Textarea label="صورت سوال (LaTeX با $...$ و $$...$$، تصویر با [[img:ID]])" rows={5} value={form.stem} onChange={(e) => set("stem", e.target.value)} />
 
@@ -130,6 +168,8 @@ export function QuestionEditor({ open, onClose, initial }: { open: boolean; onCl
           </div>
 
           <Textarea label="پاسخ تشریحی" rows={6} value={form.explanation} onChange={(e) => set("explanation", e.target.value)} />
+
+          <QuestionLessons subjectIds={form.subjectIds} topicIds={form.topicIds} lessonIds={form.lessonIds ?? []} onChange={(ids) => set("lessonIds", ids)} pending={pendingLessons} onPendingChange={setPendingLessons} />
 
           <div className="grid gap-3 sm:grid-cols-4">
             <Select label="سطح" value={form.difficulty} onChange={(e) => set("difficulty", Number(e.target.value) as Difficulty)}>
@@ -214,8 +254,10 @@ export function QuestionEditor({ open, onClose, initial }: { open: boolean; onCl
               ))}
             </div>
           </div>
-        </div>
+        </fieldset>
       )}
     </Modal>
-  );
+    <ConfirmDialog open={discard} onClose={() => setDiscard(false)} title="تغییرات ذخیره نشده" danger confirmText="خروج بدون ذخیره"
+      message="تغییرات سوال و درسنامه‌های جدید همراه آن ذخیره نشده‌اند. بدون ذخیره خارج می‌شوید؟" onConfirm={onClose} />
+  </>);
 }

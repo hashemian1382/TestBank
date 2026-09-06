@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { AppSettings, Collection, ExamAttempt, ExamDomain, ExamTemplate, ID, Lesson, Question, Source, Subject, Topic, User } from "@/types";
 import { api } from "@/services";
-import { SESSION_KEY } from "@/services/config";
+import { SESSION_KEY, STORAGE_KEY } from "@/services/config";
 
 /* ------------------------------ Toast ------------------------------ */
 export type ToastKind = "success" | "error" | "info";
@@ -25,6 +25,7 @@ export interface Catalog {
   topicById: Map<ID, Topic>;
   sourceById: Map<ID, Source>;
   questionById: Map<ID, Question>;
+  lessonById: Map<ID, Lesson>;
   topicsBySubject: Map<ID, Topic[]>;
   lessonsByTopic: Map<ID, Lesson[]>;
   domainById: Map<ID, ExamDomain>;
@@ -38,6 +39,7 @@ interface UserData {
 
 interface AppContextValue {
   booting: boolean;
+  bootError: string | null;
   user: User | null;
   catalog: Catalog;
   userData: UserData;
@@ -67,6 +69,7 @@ const emptyCatalog = (): Catalog => ({
   topicById: new Map(),
   sourceById: new Map(),
   questionById: new Map(),
+  lessonById: new Map(),
   topicsBySubject: new Map(),
   lessonsByTopic: new Map(),
   domainById: new Map(),
@@ -76,6 +79,7 @@ const AppContext = createContext<AppContextValue | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [booting, setBooting] = useState(true);
+  const [bootError, setBootError] = useState<string | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [catalog, setCatalog] = useState<Catalog>(emptyCatalog);
   const [userData, setUserData] = useState<UserData>({ collections: [], templates: [], attempts: [] });
@@ -96,7 +100,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       api.getTopics(),
       api.getSources(),
       api.getLessons(),
-      api.getQuestions({ sort: "newest" }),
+      api.getQuestions({ sort: "newest", includeInactive: true }),
       api.getSettings(),
     ]);
     const topicsBySubject = new Map<ID, Topic[]>();
@@ -104,6 +108,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     topicsBySubject.forEach((arr) => arr.sort((a, b) => a.order - b.order));
     const lessonsByTopic = new Map<ID, Lesson[]>();
     lessons.forEach((l) => lessonsByTopic.set(l.topicId, [...(lessonsByTopic.get(l.topicId) ?? []), l]));
+    lessonsByTopic.forEach((arr) => arr.sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.title.localeCompare(b.title, "fa")));
     setCatalog({
       domains,
       subjects,
@@ -113,9 +118,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       questions,
       settings,
       subjectById: new Map(subjects.map((s) => [s.id, s])),
-      topicById: new Map(topics.map((t) => [t.id, t])),
+      topicById: new Map(topics.flatMap((t) => [t.id, ...(t.mergedIds ?? [])].map((id) => [id, t] as const))),
       sourceById: new Map(sources.map((s) => [s.id, s])),
       questionById: new Map(questions.map((q) => [q.id, q])),
+      lessonById: new Map(lessons.map((l) => [l.id, l])),
       topicsBySubject,
       lessonsByTopic,
       domainById: new Map(domains.map((d) => [d.id, d])),
@@ -141,6 +147,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setUser(u);
         }
         await refreshCatalog();
+      } catch (error) {
+        setBootError(error instanceof Error ? error.message : "بارگذاری داده‌ها انجام نشد");
       } finally {
         setBooting(false);
       }
@@ -148,8 +156,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [refreshCatalog]);
 
   useEffect(() => {
-    refreshUserData();
-  }, [refreshUserData]);
+    if (!booting && !bootError) refreshUserData().catch((error) => toast(error instanceof Error ? error.message : "خطا در بارگذاری داده‌ها", "error"));
+  }, [refreshUserData, booting, bootError, toast]);
+
+  // Admin catalog includes inactive questions; reload on login/logout/role changes.
+  useEffect(() => {
+    if (!booting && !bootError) refreshCatalog().catch((error) => toast(error instanceof Error ? error.message : "خطا در بارگذاری کاتالوگ", "error"));
+  }, [user?.id, user?.role, booting, bootError, refreshCatalog, toast]);
+
+  useEffect(() => {
+    const changed = (event: StorageEvent) => {
+      if (event.key !== STORAGE_KEY || booting || bootError) return;
+      Promise.all([refreshCatalog(), refreshUserData()]).catch((error) => toast(error instanceof Error ? error.message : "خطا در همگام‌سازی داده‌های محلی", "error"));
+    };
+    window.addEventListener("storage", changed);
+    return () => window.removeEventListener("storage", changed);
+  }, [booting, bootError, refreshCatalog, refreshUserData, toast]);
 
   const logout = useCallback(async () => {
     await api.logout();
@@ -170,8 +192,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo<AppContextValue>(
-    () => ({ booting, user, catalog, userData, toasts, toast, dismissToast, setUser, logout, refreshCatalog, refreshUserData, ownsQuestion, ownsSubject, isBookmarked, toggleBookmark }),
-    [booting, user, catalog, userData, toasts, toast, dismissToast, logout, refreshCatalog, refreshUserData, ownsQuestion, ownsSubject, isBookmarked, toggleBookmark]
+    () => ({ booting, bootError, user, catalog, userData, toasts, toast, dismissToast, setUser, logout, refreshCatalog, refreshUserData, ownsQuestion, ownsSubject, isBookmarked, toggleBookmark }),
+    [booting, bootError, user, catalog, userData, toasts, toast, dismissToast, logout, refreshCatalog, refreshUserData, ownsQuestion, ownsSubject, isBookmarked, toggleBookmark]
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

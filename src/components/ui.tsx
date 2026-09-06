@@ -1,5 +1,6 @@
 import { X, Check, AlertCircle, Info, Search, Loader2 } from "lucide-react";
-import { forwardRef, useEffect, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
+import { forwardRef, useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
+import { createPortal } from "react-dom";
 import { cn } from "@/lib/utils";
 import { useApp } from "@/store/AppContext";
 
@@ -241,59 +242,86 @@ export function ProgressBar({ value, className, color }: { value: number; classN
 }
 
 /* ------------------------------ Modal ------------------------------ */
-export function Modal({ open, onClose, title, children, footer, size = "md" }: { open: boolean; onClose: () => void; title: string; children: ReactNode; footer?: ReactNode; size?: "sm" | "md" | "lg" | "xl" }) {
+const modalStack: string[] = [];
+let previousBodyOverflow = "";
+
+export function Modal({ open, onClose, title, children, footer, size = "md", locked = false }: { open: boolean; onClose: () => void; title: string; children: ReactNode; footer?: ReactNode; size?: "sm" | "md" | "lg" | "xl"; locked?: boolean }) {
+  const id = useId();
+  const panel = useRef<HTMLDivElement>(null);
+  const closeRef = useRef(onClose);
+  const lockedRef = useRef(locked);
+  closeRef.current = onClose;
+  lockedRef.current = locked;
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
+    const previousFocus = document.activeElement as HTMLElement | null;
+    if (!modalStack.length) previousBodyOverflow = document.body.style.overflow;
+    modalStack.push(id);
     document.body.style.overflow = "hidden";
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      document.body.style.overflow = "";
+    const frame = requestAnimationFrame(() => {
+      if (!panel.current?.contains(document.activeElement)) panel.current?.focus();
+    });
+    const onKey = (event: KeyboardEvent) => {
+      if (modalStack[modalStack.length - 1] !== id || event.defaultPrevented) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        if (!lockedRef.current) closeRef.current();
+      }
+      if (event.key === "Tab" && panel.current) {
+        const elements = [...panel.current.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex="0"]')]
+          .filter((el) => el.getClientRects().length > 0);
+        const first = elements[0]; const last = elements[elements.length - 1];
+        if (!first) { event.preventDefault(); panel.current.focus(); }
+        else if (event.shiftKey && (document.activeElement === first || document.activeElement === panel.current)) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && (document.activeElement === last || document.activeElement === panel.current)) { event.preventDefault(); first.focus(); }
+      }
     };
-  }, [open, onClose]);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("keydown", onKey);
+      const index = modalStack.indexOf(id);
+      if (index >= 0) modalStack.splice(index, 1);
+      if (!modalStack.length) document.body.style.overflow = previousBodyOverflow;
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+  }, [open, id]);
   if (!open) return null;
-  const widths = { sm: "max-w-md", md: "max-w-lg", lg: "max-w-2xl", xl: "max-w-4xl" };
-  return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/50 p-0 backdrop-blur-sm sm:items-center sm:p-4" onClick={onClose}>
-      <div className={cn("flex max-h-[92vh] w-full flex-col rounded-t-2xl bg-white shadow-2xl animate-fade-up sm:rounded-2xl", widths[size])} onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
-          <h3 className="text-base font-bold text-slate-900">{title}</h3>
-          <button onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700">
+  const close = () => { if (!locked) onClose(); };
+  const widths = { sm: "max-w-md", md: "max-w-lg", lg: "max-w-2xl", xl: "max-w-6xl" };
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/50 p-0 backdrop-blur-sm sm:items-center sm:p-4" onClick={close}>
+      <div ref={panel} role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} tabIndex={-1}
+        className={cn("flex max-h-[92dvh] w-full min-w-0 flex-col rounded-t-2xl bg-white shadow-2xl outline-none animate-fade-up sm:rounded-2xl", widths[size])} onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
+          <h3 id={`${id}-title`} className="text-base font-bold text-slate-900">{title}</h3>
+          <button type="button" aria-label="بستن" disabled={locked} onClick={close} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-40">
             <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="flex-1 overflow-y-auto px-5 py-4">{children}</div>
-        {footer && <div className="flex items-center justify-end gap-2 border-t border-slate-100 px-5 py-3">{footer}</div>}
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
+        {footer && <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-100 px-5 py-3">{footer}</div>}
       </div>
-    </div>
+    </div>, document.body
   );
 }
 
-export function ConfirmDialog({ open, onClose, onConfirm, title, message, confirmText = "تأیید", danger }: { open: boolean; onClose: () => void; onConfirm: () => void; title: string; message: string; confirmText?: string; danger?: boolean }) {
+export function ConfirmDialog({ open, onClose, onConfirm, title, message, confirmText = "تأیید", danger }: { open: boolean; onClose: () => void; onConfirm: () => void | Promise<void>; title: string; message: string; confirmText?: string; danger?: boolean }) {
+  const { toast } = useApp();
+  const [busy, setBusy] = useState(false);
+  const running = useRef(false);
+  const confirm = async () => {
+    if (running.current) return;
+    running.current = true; setBusy(true);
+    try { await onConfirm(); onClose(); }
+    catch (error) { toast(error instanceof Error ? error.message : "عملیات انجام نشد", "error"); }
+    finally { running.current = false; setBusy(false); }
+  };
   return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title={title}
-      size="sm"
-      footer={
-        <>
-          <Button variant="ghost" onClick={onClose}>
-            انصراف
-          </Button>
-          <Button
-            variant={danger ? "danger" : "primary"}
-            onClick={() => {
-              onConfirm();
-              onClose();
-            }}
-          >
-            {confirmText}
-          </Button>
-        </>
-      }
-    >
+    <Modal open={open} onClose={onClose} title={title} size="sm" locked={busy} footer={<>
+      <Button variant="ghost" disabled={busy} onClick={onClose}>انصراف</Button>
+      <Button variant={danger ? "danger" : "primary"} loading={busy} onClick={confirm}>{confirmText}</Button>
+    </>}>
       <p className="text-sm leading-7 text-slate-600">{message}</p>
     </Modal>
   );
@@ -307,7 +335,7 @@ export function ToastViewport() {
   return (
     <div className="pointer-events-none fixed bottom-4 left-1/2 z-[100] flex w-full max-w-sm -translate-x-1/2 flex-col gap-2 px-4">
       {toasts.map((t) => (
-        <div key={t.id} className={cn("pointer-events-auto flex items-center gap-3 rounded-xl px-4 py-3 text-sm text-white shadow-lg animate-fade-up", tones[t.kind])}>
+        <div key={t.id} role={t.kind === "error" ? "alert" : "status"} className={cn("pointer-events-auto flex items-center gap-3 rounded-xl px-4 py-3 text-sm text-white shadow-lg animate-fade-up", tones[t.kind])}>
           {icons[t.kind]}
           <span className="flex-1">{t.message}</span>
           <button onClick={() => dismissToast(t.id)} className="opacity-70 hover:opacity-100">
